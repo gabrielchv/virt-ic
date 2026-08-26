@@ -1,0 +1,24 @@
+# Traços capturados: dados de execução, não fonte.
+# Podem ficar grandes e são reproduzíveis com ./run.sh
+traces/
+*.pcap
+*.pcapng
+
+# Saídas de análise
+relatorio.txt
+analise.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editores / sistema
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Ambiente local
+.env
