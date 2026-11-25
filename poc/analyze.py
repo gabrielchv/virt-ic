@@ -196,6 +196,37 @@ def id_conexao(a):
     return ("udp", "resolucao-de-nome")
 
 
+PORTA_PG = "5432"
+
+# Rótulos que o tshark usa para mensagens iniciadas pelo **cliente**. Usado só
+# como desempate quando a porta do Postgres não está visível no avistamento
+# (tradução de endereço/porta). Comparação exata: "parse" é substring de
+# "parse completion", que é resposta do servidor.
+MENSAGENS_DO_CLIENTE = {
+    "simple query",
+    "parse",
+    "bind",
+    "execute",
+    "describe",
+    "close",
+    "sync",
+    "flush",
+    "terminate",
+    "password",
+    "startup message",
+    "function call",
+    "copy data",
+    "copy done",
+    "copy fail",
+}
+
+
+def _eh_mensagem_do_cliente(tipos: str) -> bool:
+    """Se a primeira mensagem do segmento foi enviada pelo cliente."""
+    primeira = tipos.split(",")[0].strip().lower()
+    return primeira in MENSAGENS_DO_CLIENTE
+
+
 def classificar(a):
     """Que fase da conversa este Pacote Lógico inaugura, se alguma."""
     if a["dns.qry.name"]:
@@ -212,7 +243,25 @@ def classificar(a):
         baixo = tipos.lower()
         if any(t in baixo for t in ("startup", "authentication", "password")):
             return "autenticacao-postgres"
-        if "query" in baixo or "parse" in baixo or "bind" in baixo:
+
+        # A direção decide, não o rótulo.
+        #
+        # `pgsql.type` é uma string legível (FT_STRING), e vários rótulos de
+        # **resposta do servidor** contêm as palavras que o código antigo
+        # procurava: "Ready for query" e "Empty query" contêm "query";
+        # "Parse completion" contém "parse"; "Bind completion" contém "bind".
+        # Testar substring classificava respostas como consulta. No sentido
+        # oposto, "Describe", "Execute" e "Sync" não contêm nenhuma das três e
+        # caíam em "resposta-do-banco", apesar de serem pedidos do cliente.
+        # Como o psycopg usa o protocolo estendido, isso acontecia em toda
+        # requisição e invertia a narrativa das fases.
+        if a["tcp.dstport"] == PORTA_PG:
+            return "consulta-sql"
+        if a["tcp.srcport"] == PORTA_PG:
+            return "resposta-do-banco"
+
+        # Porta não visível: desempata pelo nome exato da mensagem.
+        if _eh_mensagem_do_cliente(tipos):
             return "consulta-sql"
         return "resposta-do-banco"
 
