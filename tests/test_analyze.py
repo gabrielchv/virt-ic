@@ -149,3 +149,79 @@ class FasesDeTransporteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CorrelacaoTests(unittest.TestCase):
+    """Um Pacote Lógico por datagrama — nem a mais, nem a menos.
+
+    Este é o invariante que o projeto existe para ensinar: sem ele, uma
+    visualização multiponto sugere que houve três pacotes onde houve um. O erro
+    inverso (dois datagramas fundidos em um) apaga tráfego.
+    """
+
+    def _av(self, ponto: str, t: float, **campos: str) -> dict:
+        base = {
+            "ponto": ponto,
+            "t": t,
+            "tcp.flags": "0x10",
+            "tcp.seq_raw": "100",
+            "tcp.ack_raw": "200",
+            "tcp.len": "0",
+            "tcp.payload": "",
+        }
+        return avistamento(**{**base, **campos})
+
+    def test_um_datagrama_em_tres_pontos_e_um_pacote_logico(self):
+        avistamentos = [
+            self._av("host-lo", 1.0),
+            self._av("host-bridge", 1.001),
+            self._av("web-eth0", 1.002),
+        ]
+        logicos = analyze.correlacionar(avistamentos)
+
+        self.assertEqual(len(logicos), 1)
+        self.assertEqual(len(logicos[0]["avistamentos"]), 3)
+
+    def test_dois_acks_duplicados_no_mesmo_ponto_sao_dois_pacotes(self):
+        # Mesmo seq/ack/len/flags e payload vazio: a chave de correlação é
+        # idêntica, mas são dois segmentos distintos na rede.
+        avistamentos = [self._av("web-eth0", 1.0), self._av("web-eth0", 1.004)]
+        logicos = analyze.correlacionar(avistamentos)
+
+        self.assertEqual(len(logicos), 2, "dois ACKs duplicados viraram um pacote só")
+        for pacote in logicos:
+            self.assertEqual(len(pacote["avistamentos"]), 1)
+
+    def test_o_mesmo_par_observado_em_dois_pontos_continua_pareado(self):
+        # Dois datagramas idênticos, cada um visto em dois pontos: dois Pacotes
+        # Lógicos, cada um com dois avistamentos.
+        avistamentos = [
+            self._av("web-eth0", 1.0),
+            self._av("db-eth0", 1.001),
+            self._av("web-eth0", 1.5),
+            self._av("db-eth0", 1.501),
+        ]
+        logicos = analyze.correlacionar(avistamentos)
+
+        self.assertEqual(len(logicos), 2)
+        self.assertEqual(sorted(len(p["avistamentos"]) for p in logicos), [2, 2])
+        for pacote in logicos:
+            self.assertEqual(sorted(pacote["pontos"]), ["db-eth0", "web-eth0"])
+
+    def test_requisicao_e_resposta_icmp_nao_se_fundem(self):
+        # Pedido e resposta de eco compartilham ip.id, protocolo e payload.
+        pedido = avistamento(ponto="host-lo", t=1.0, **{"ip.id": "77", "ip.proto": "1", "icmp.type": "8", "data.data": "abcd"})
+        resposta = avistamento(ponto="db-eth0", t=1.002, **{"ip.id": "77", "ip.proto": "1", "icmp.type": "0", "data.data": "abcd"})
+        logicos = analyze.correlacionar([pedido, resposta])
+
+        self.assertEqual(len(logicos), 2, "pedido e resposta ICMP fundidos em um pacote")
+
+    def test_pacotes_logicos_saem_ordenados_por_tempo(self):
+        avistamentos = [
+            self._av("web-eth0", 5.0),
+            self._av("web-eth0", 1.0),
+            self._av("web-eth0", 3.0),
+        ]
+        t0s = [p["t0"] for p in analyze.correlacionar(avistamentos)]
+
+        self.assertEqual(t0s, sorted(t0s))

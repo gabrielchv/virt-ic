@@ -23,7 +23,7 @@ from pathlib import Path
 
 FIELDS = [
     "frame.number", "frame.time_epoch",
-    "ip.src", "ip.dst", "ip.id", "ip.proto",
+    "ip.src", "ip.dst", "ip.id", "ip.proto", "icmp.type",
     "tcp.srcport", "tcp.dstport", "tcp.seq_raw", "tcp.ack_raw",
     "tcp.len", "tcp.flags", "tcp.payload",
     "udp.srcport", "udp.dstport", "udp.length", "data.data",
@@ -144,7 +144,10 @@ def chave_correlacao(a):
                 a["tcp.flags"], md5(a["tcp.payload"]))
     if a["udp.length"]:
         return ("udp", a["ip.id"], a["udp.length"], md5(a["data.data"]))
-    return ("outro", a["ip.id"], a["ip.proto"], md5(a["data.data"]))
+    # `icmp.type` separa pedido de eco (8) de resposta (0): os dois têm o mesmo
+    # ip.id, protocolo e payload, então sem este campo um par de ping virava um
+    # Pacote Lógico só.
+    return ("outro", a["ip.id"], a["ip.proto"], a["icmp.type"], md5(a["data.data"]))
 
 
 def endereco(a):
@@ -154,27 +157,51 @@ def endereco(a):
 
 
 def correlacionar(avistamentos):
-    """Agrupa Avistamentos em Pacotes Lógicos."""
+    """Agrupa Avistamentos em Pacotes Lógicos.
+
+    A chave sozinha não basta. Dois segmentos distintos podem compartilhar todos
+    os campos que a tradução preserva: dois ACKs duplicados têm o mesmo
+    seq/ack/len/flags e payload vazio, e uma resposta ICMP de eco tem o mesmo
+    ip.id, protocolo e payload do pedido. Agrupar só pela chave fundia esses
+    pares em um Pacote Lógico — exatamente o erro conceitual que o projeto
+    existe para corrigir ("uma visualização multiponto sugere que houve três
+    pacotes onde houve um"; aqui era o contrário).
+
+    O desempate é o invariante do domínio: um datagrama atravessa cada Ponto de
+    Observação no máximo uma vez. Se um avistamento chega para uma chave que já
+    tem outro avistamento *no mesmo ponto*, são pacotes diferentes — não há como
+    um único datagrama aparecer duas vezes no mesmo lugar. Um Pacote Lógico com
+    três pontos produz três avistamentos, como diz CONTEXT.md.
+    """
     grupos = defaultdict(list)
-    for a in avistamentos:
-        grupos[chave_correlacao(a)].append(a)
+    for a in sorted(avistamentos, key=lambda a: a["t"]):
+        clusters = grupos[chave_correlacao(a)]
+        for cluster in clusters:
+            # O mesmo ponto duas vezes significa dois datagramas.
+            if a["ponto"] not in cluster["pontos"]:
+                cluster["membros"].append(a)
+                cluster["pontos"].add(a["ponto"])
+                break
+        else:
+            clusters.append({"membros": [a], "pontos": {a["ponto"]}})
 
     logicos = []
-    for chave, membros in grupos.items():
-        membros.sort(key=lambda a: a["t"])
-        enderecos = []
-        for a in membros:
-            e = endereco(a)
-            if e not in enderecos:
-                enderecos.append(e)
-        logicos.append({
-            "chave": chave,
-            "avistamentos": membros,
-            "t0": membros[0]["t"],
-            "pontos": [a["ponto"] for a in membros],
-            "enderecos": enderecos,
-            "traduzido": len(enderecos) > 1,
-        })
+    for chave, clusters in grupos.items():
+        for cluster in clusters:
+            membros = cluster["membros"]
+            enderecos = []
+            for a in membros:
+                e = endereco(a)
+                if e not in enderecos:
+                    enderecos.append(e)
+            logicos.append({
+                "chave": chave,
+                "avistamentos": membros,
+                "t0": membros[0]["t"],
+                "pontos": [a["ponto"] for a in membros],
+                "enderecos": enderecos,
+                "traduzido": len(enderecos) > 1,
+            })
     logicos.sort(key=lambda p: p["t0"])
     return logicos
 
