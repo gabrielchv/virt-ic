@@ -225,3 +225,84 @@ class CorrelacaoTests(unittest.TestCase):
         t0s = [p["t0"] for p in analyze.correlacionar(avistamentos)]
 
         self.assertEqual(t0s, sorted(t0s))
+
+
+class TabelaDeTraducaoTests(unittest.TestCase):
+    """A seção que ensina onde a tradução aconteceu.
+
+    É o ponto central do projeto, e ela pareava duas listas construídas com
+    critérios diferentes (`enderecos` deduplicado por endereço, `pontos` por
+    ponto) com um `zip`. Quando dois Pontos de Observação compartilham o mesmo
+    endereço, as listas têm tamanhos diferentes e o deslocamento atribui cada
+    endereço ao ponto errado.
+    """
+
+    def _av(self, ponto: str, t: float, src: str, dst: str, sport: int, dport: int) -> dict:
+        return avistamento(
+            **{
+                "ponto": ponto,
+                "t": t,
+                "tcp.flags": TCP_ACK_PSH,
+                "tcp.seq_raw": "500",
+                "tcp.ack_raw": "600",
+                "tcp.len": "10",
+                "tcp.payload": "deadbeef",
+                "ip.src": src,
+                "ip.dst": dst,
+                "tcp.srcport": str(sport),
+                "tcp.dstport": str(dport),
+            }
+        )
+
+    def _linhas_de_traducao(self, avistamentos: list[dict]) -> list[str]:
+        logicos = analyze.correlacionar(avistamentos)
+        episodio = {
+            "tipo": "abertura-de-conexao",
+            "conexao": analyze.id_conexao(avistamentos[0]),
+            "pacotes": logicos,
+        }
+        manifesto = {"cenario": {"url": "x", "repeticoes": 1}, "pontos": []}
+        texto = analyze.relatorio([episodio], logicos, avistamentos, manifesto)
+
+        linhas, dentro = [], False
+        for linha in texto.splitlines():
+            if "TRADUÇÃO" in linha:
+                dentro = True
+                continue
+            if dentro:
+                if linha.strip() == "":
+                    break
+                linhas.append(linha.strip())
+        return linhas
+
+    def test_cada_ponto_aparece_com_o_endereco_que_ele_mesmo_v_i(self):
+        # Quatro pontos, e os dois primeiros compartilham endereço: três
+        # endereços distintos para quatro pontos é o caso que desalinha o zip.
+        avistamentos = [
+            self._av("host-lo", 1.000, "10.0.0.1", "10.0.0.1", 40000, 8000),
+            self._av("host-bridge", 1.001, "10.0.0.1", "10.0.0.1", 40000, 8000),
+            self._av("web-eth0", 1.002, "172.18.0.3", "172.18.0.4", 40000, 5432),
+            self._av("db-eth0", 1.003, "172.18.0.3", "172.18.0.4", 40000, 5432),
+        ]
+
+        linhas = self._linhas_de_traducao(avistamentos)
+
+        self.assertEqual(
+            linhas,
+            [
+                "host-lo        10.0.0.1:40000 -> 10.0.0.1:8000",
+                "host-bridge    10.0.0.1:40000 -> 10.0.0.1:8000",
+                "web-eth0       172.18.0.3:40000 -> 172.18.0.4:5432",
+                "db-eth0        172.18.0.3:40000 -> 172.18.0.4:5432",
+            ],
+        )
+
+    def test_um_ponto_aparece_uma_vez_so(self):
+        avistamentos = [
+            self._av("web-eth0", 1.000, "172.18.0.3", "172.18.0.4", 40000, 5432),
+            self._av("host-lo", 1.001, "10.0.0.1", "10.0.0.1", 40000, 8000),
+        ]
+        linhas = self._linhas_de_traducao(avistamentos)
+
+        pontos = [linha.split()[0] for linha in linhas]
+        self.assertEqual(pontos, ["web-eth0", "host-lo"])

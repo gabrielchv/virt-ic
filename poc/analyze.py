@@ -374,9 +374,20 @@ def relatorio(episodios, logicos, avistamentos, manifesto):
             add(f"      visto em: {pontos}")
             if pacote["traduzido"]:
                 add("      TRADUÇÃO - o mesmo pacote, endereços diferentes:")
-                for e, ponto in zip(pacote["enderecos"],
-                                    dict.fromkeys(pacote["pontos"])):
-                    add(f"        {ponto:14s} {e}")
+                # Pareado por avistamento, não por duas listas independentes.
+                # `enderecos` era deduplicado por endereço e `pontos` por ponto,
+                # e depois os dois eram `zip`ados: quando dois Pontos de
+                # Observação compartilham o mesmo endereço, as listas ficam com
+                # tamanhos diferentes e o deslocamento atribui um endereço ao
+                # ponto errado — justamente na seção que ensina onde a tradução
+                # aconteceu.
+                vistos = []
+                for avistamento in pacote["avistamentos"]:
+                    linha = (avistamento["ponto"], endereco(avistamento))
+                    if linha not in vistos:
+                        vistos.append(linha)
+                for ponto, endereco_visto in vistos:
+                    add(f"        {ponto:14s} {endereco_visto}")
         add("")
 
     return "\n".join(linhas)
